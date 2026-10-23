@@ -17,32 +17,69 @@
 //   terminal once you land on app.snyk.io logged in. Session is saved to auth.json,
 //   which is gitignored — never commit it, it's equivalent to your login session.)
 //
-// Dry run against the org list below (no changes made, just confirms it can find
-// every rule row for every org):
+// Org and rule lists live in plain CSV files, not in this code — copy the
+// .example.csv files and edit those:
+//   cp orgs.example.csv orgs.csv
+//   cp rules.example.csv rules.csv
+//
+// Dry run (no changes made, just confirms it can find every rule row for every org):
 //   node cascade_iac_severity.js --dry-run
 //
 // Real run:
 //   node cascade_iac_severity.js
+//   Writes a results-<timestamp>.csv with one row per org/rule for an audit trail.
 //
-// Edit ORGS and RULES below before running for real. You need admin access on
-// every org listed, under whichever account you authenticated as in --login.
+// You need admin access on every org listed, under whichever account you
+// authenticated as in --login.
 
 const { chromium } = require('playwright');
 const fs = require('fs');
 
 const AUTH_FILE = 'auth.json';
+const ORGS_FILE = 'orgs.csv';
+const RULES_FILE = 'rules.csv';
 
-// Org slugs to cascade the settings to (the part of the URL after /org/).
-const ORGS = [
-  'your-org-slug-1',
-  'your-org-slug-2',
-];
+const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'none']);
 
-// Rule ID -> desired severity. Severity must be one of: critical, high, medium, low, none.
-// Rule IDs are Snyk's public IaC rule catalog (see https://security.snyk.io/rules/cloud).
-const RULES = {
-  'SNYK-CC-AWS-419': 'none',
-};
+// Reads a single-column CSV (header "org_slug", one slug per row after that).
+function readOrgsCsv(path) {
+  const lines = fs.readFileSync(path, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
+  const [, ...rows] = lines; // drop header
+  return rows;
+}
+
+// Reads a two-column CSV (header "rule_id,severity").
+function readRulesCsv(path) {
+  const lines = fs.readFileSync(path, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
+  const [, ...rows] = lines; // drop header
+  const rules = {};
+  for (const row of rows) {
+    const [ruleId, severity] = row.split(',').map((s) => s.trim());
+    if (!ruleId || !severity) continue;
+    if (!VALID_SEVERITIES.has(severity)) {
+      throw new Error(`Invalid severity "${severity}" for rule ${ruleId} in ${path}. Must be one of: ${[...VALID_SEVERITIES].join(', ')}`);
+    }
+    rules[ruleId] = severity;
+  }
+  return rules;
+}
+
+function writeResultsCsv(summary) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const path = `results-${timestamp}.csv`;
+  const rows = ['org_slug,rule_id,status,http_status'];
+  for (const { orgSlug, results } of summary) {
+    if (results.length === 0) {
+      rows.push(`${orgSlug},,page_load_failed,`);
+      continue;
+    }
+    for (const r of results) {
+      rows.push(`${orgSlug},${r.ruleId},${r.status},${r.httpStatus ?? ''}`);
+    }
+  }
+  fs.writeFileSync(path, rows.join('\n') + '\n');
+  return path;
+}
 
 async function captureLogin() {
   const browser = await chromium.launch({ headless: false });
@@ -56,7 +93,7 @@ async function captureLogin() {
   console.log(`Saved session to ${AUTH_FILE}`);
 }
 
-async function applyToOrg(context, orgSlug, dryRun) {
+async function applyToOrg(context, orgSlug, rules, dryRun) {
   const page = await context.newPage();
   await page.goto(`https://app.snyk.io/org/${orgSlug}/manage/cloud-config`, {
     waitUntil: 'networkidle',
@@ -90,7 +127,7 @@ async function applyToOrg(context, orgSlug, dryRun) {
   }
 
   const results = [];
-  for (const [ruleId, severity] of Object.entries(RULES)) {
+  for (const [ruleId, severity] of Object.entries(rules)) {
     const locator = frame.locator(`select[id="${ruleId}Severity"]`);
     const count = await locator.count();
     if (count === 0) {
@@ -134,18 +171,34 @@ async function main() {
     process.exit(1);
   }
 
+  for (const [file, example] of [[ORGS_FILE, 'orgs.example.csv'], [RULES_FILE, 'rules.example.csv']]) {
+    if (!fs.existsSync(file)) {
+      console.error(`No ${file} found. Copy ${example} to ${file} and edit it first.`);
+      process.exit(1);
+    }
+  }
+
+  const orgs = readOrgsCsv(ORGS_FILE);
+  const rules = readRulesCsv(RULES_FILE);
+  console.log(`Loaded ${orgs.length} org(s) from ${ORGS_FILE} and ${Object.keys(rules).length} rule(s) from ${RULES_FILE}.`);
+
   const dryRun = args.includes('--dry-run');
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ storageState: AUTH_FILE });
 
   const summary = [];
-  for (const orgSlug of ORGS) {
-    summary.push(await applyToOrg(context, orgSlug, dryRun));
+  for (const orgSlug of orgs) {
+    summary.push(await applyToOrg(context, orgSlug, rules, dryRun));
   }
 
   await browser.close();
   console.log('\n--- Summary ---');
   console.log(JSON.stringify(summary, null, 2));
+
+  if (!dryRun) {
+    const resultsPath = writeResultsCsv(summary);
+    console.log(`\nWrote audit trail to ${resultsPath}`);
+  }
 }
 
 main().catch((err) => {

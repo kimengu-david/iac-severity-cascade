@@ -2,4 +2,7 @@ node_modules/
 auth.json
 debug-*.png
 debug-*.txt
+orgs.csv
+rules.csv
+results-*.csv
 .DS_Store
