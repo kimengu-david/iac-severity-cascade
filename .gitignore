@@ -1,0 +1,5 @@
+node_modules/
+auth.json
+debug-*.png
+debug-*.txt
+.DS_Store

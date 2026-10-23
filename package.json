@@ -1,0 +1,15 @@
+{
+  "name": "iac-severity-cascade",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cascade Snyk IaC rule severity overrides across many orgs via browser automation",
+  "main": "cascade_iac_severity.js",
+  "scripts": {
+    "login": "node cascade_iac_severity.js --login",
+    "dry-run": "node cascade_iac_severity.js --dry-run",
+    "cascade": "node cascade_iac_severity.js"
+  },
+  "dependencies": {
+    "playwright": "^1.64.1"
+  }
+}
